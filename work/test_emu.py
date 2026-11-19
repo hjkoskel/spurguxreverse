@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Sanity-check the emulator against a known 16-bit test program."""
+import sys
+sys.path.insert(0, '/home/neuro/reverse/spurgux/work')
+from emu16 import CPU
+
+# Test program (assembled by hand):
+prog = bytes([
+    0xB8,0x05,0x00,           # 0x100 mov ax,5
+    0xBB,0x03,0x00,           # 0x103 mov bx,3
+    0x03,0xC3,                # 0x106 add ax,bx
+    0x2D,0x0A,0x00,           # 0x108 sub ax,10  (8-10: cf=1, ax=FFFE)
+    0x73,0x08,                # 0x10B jnc 0x115
+    0x05,0x02,0x00,           # 0x10D add ax,2   (ax=0)
+    0xEB,0x06,                # 0x110 jmp 0x118
+    0x90,0x90,0x90,           # 0x112..0x114
+    0x83,0xE8,0x01,           # 0x115 sub ax,1   (not taken)
+    0x25,0xFF,0x00,           # 0x118 and ax,0xFF (ax=0)
+    0xC1,0xE0,0x01,           # 0x11B rol ax,1   (ax=0)
+    0xE8,0x02,0x00,           # 0x11E call 0x123
+    0xCD,0x20,                # 0x121 int 0x20
+    0x43,0x43,0xC3,           # 0x123 inc bx; inc bx; ret
+])
+
+cpu = CPU(prog)
+cpu.run()
+assert cpu.halt, "should halt via INT 20"
+assert cpu.ax == 0, f"ax={cpu.ax:#06x}"
+assert cpu.bx == 5, f"bx={cpu.bx:#06x} (3+2)"
+print("sanity test 1 PASSED: ax=0, bx=5, cf=%d zf=%d" % (cpu.cf, cpu.zf))
+
+# Test 2: overflow + flags
+prog2 = bytes([
+    0xB8,0xFF,0x7F,           # mov ax,0x7FFF
+    0x05,0x01,0x00,           # add ax,1     -> ax=0x8000, of=1
+    0xB8,0x00,0x80,           # mov ax,0x8000
+    0x05,0xFF,0x7F,           # add ax,0x7FFF -> ax=0xFFFF, of=0, cf=1
+    0x3D,0xFF,0xFF,           # cmp ax,0xFFFF  -> zf=1
+    0x74,0x03,                # je 0x114
+    0xB8,0xAD,0xDE,           # mov ax,0xDEAD (bad)
+    0xB8,0xAD,0x00,           # 0x114: mov ax,0x00AD (good)
+    0xCD,0x20,
+])
+cpu = CPU(prog2)
+cpu.run()
+assert cpu.halt
+assert cpu.ax == 0xAD, f"test2 ax={cpu.ax:#06x}"
+print("sanity test 2 PASSED: overflow/flags/je OK")
+
+# Test 3: 32-bit mul/div
+prog3 = bytes([
+    0xB8,0x0A,0x00,           # mov ax,10
+    0xBB,0x03,0x00,           # mov bx,3
+    0xF7,0xE3,                # mul bx       -> dx:ax = 30
+    0xBA,0x00,0x00,           # mov dx,0
+    0xBB,0x06,0x00,           # mov bx,6
+    0xF7,0xF3,                # div bx       -> ax=5, dx=0
+    0xCD,0x20,
+])
+cpu = CPU(prog3)
+cpu.run()
+assert cpu.halt
+assert cpu.ax == 5 and cpu.dx == 0, f"test3 ax={cpu.ax} dx={cpu.dx}"
+print("sanity test 3 PASSED: mul/div OK")
+
+# Test 4: rep movsb
+prog4 = bytes([
+    0xBE,0x60,0x00,           # mov si,0x60
+    0xBF,0x0A,0x00,           # mov di,0x0A
+    0xC7,0x06,0x60,0x00,0x41,0x42,   # mov [0x60],0x4241
+    0xC6,0x06,0x62,0x00,0x43,        # mov [0x62],0x43
+    0xB9,0x03,0x00,           # mov cx,3
+    0xF3,0xA4,                # rep movsb
+    0xCD,0x20,
+])
+cpu = CPU(prog4)
+cpu.run()
+assert cpu.halt
+assert cpu.mem[0x0A] == 0x41 and cpu.mem[0x0B] == 0x42 and cpu.mem[0x0C] == 0x43
+print("sanity test 4 PASSED: rep movsb OK")
+print("ALL SANITY TESTS PASSED")
