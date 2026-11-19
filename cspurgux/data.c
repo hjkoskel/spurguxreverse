@@ -1,103 +1,37 @@
-/* data.c -- data files (CP437 text), SPU.TOP high scores, save/load. */
+/* data.c -- data files (CP437 text), SPU.TOP high scores, save/load.
+   Text files are streamed a line at a time. */
 #define _POSIX_C_SOURCE 200112L
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include "spurgux.h"
 
-#define MAXDIRS 5
-#define RAWMAX  8192
-
-static char DataDirs[MAXDIRS][PATHMAX];
-static u8   NDataDirs = 0;
-static u8   RawBuf[RAWMAX];
-static char TextBuf[TEXTMAX];
-static u16  TextLen = 0;
-
-const char *Lines[MAXLINES];
-u16 LineCount = 0;
+/* one file is open at a time: they all share this stdio buffer, so the
+   C library does not allocate one */
+static char IoBuf[128];
+static char ExeDir[PATHMAX];
+static char Path[PATHMAX];
 
 /* ===========================================================================
-   CP437 -> UTF-8
+   Data directories: ., the program dir, ./spurg117, <prog>/spurg117,
+   <prog>/../spurg117
    =========================================================================== */
-static const char *const Hi437[128] = {
-  "Ç","ü","é","â","ä","à","å","ç","ê","ë","è","ï","î","ì","Ä","Å",
-  "É","æ","Æ","ô","ö","ò","û","ù","ÿ","Ö","Ü","¢","£","¥","₧","ƒ",
-  "á","í","ó","ú","ñ","Ñ","ª","º","¿","⌐","¬","½","¼","¡","«","»",
-  "░","▒","▓","│","┤","╡","╢","╖","╕","╣","║","╗","╝","╜","╛","┐",
-  "└","┴","┬","├","─","┼","╞","╟","╚","╔","╩","╦","╠","═","╬","╧",
-  "╨","╤","╥","╙","╘","╒","╓","╫","╪","┘","┌","█","▄","▌","▐","▀",
-  "α","ß","Γ","π","Σ","σ","µ","τ","Φ","Θ","Ω","δ","∞","φ","ε","∩",
-  "≡","±","≥","≤","⌠","⌡","÷","≈","°","∙","·","√","ⁿ","²","■"," "
-};
-
-static void PutStr(char *dst, u16 *len, u16 size, const char *s)
-{
-  u16 n = (u16)strlen(s);
-  if (*len + n + 1 > size) return;
-  memcpy(dst + *len, s, n);
-  *len = (u16)(*len + n);
-  dst[*len] = 0;
-}
-
-void CP437ToUTF8(const u8 *src, u16 n, char *dst, u16 dstsize)
-{
-  u16 i, len = 0;
-  char one[2];
-  dst[0] = 0;
-  one[1] = 0;
-  for (i = 0; i < n; i++) {
-    u8 c = src[i];
-    if (c >= 0x80) PutStr(dst, &len, dstsize, Hi437[c - 0x80]);
-    else if (c == 0x7F) PutStr(dst, &len, dstsize, "⌂");
-    else if (c == 9) PutStr(dst, &len, dstsize, "        ");
-    else if (c >= ' ') {
-      one[0] = (char)c;
-      PutStr(dst, &len, dstsize, one);
-    }
-  }
-}
-
-/* ===========================================================================
-   Data directories
-   =========================================================================== */
-static void AddDir(const char *a, const char *b)
-{
-  u8 i;
-  char tmp[PATHMAX];
-  if (NDataDirs >= MAXDIRS) return;
-  StrCopy(tmp, a, PATHMAX);
-  StrCat(tmp, b, PATHMAX);
-  for (i = 0; i < NDataDirs; i++)
-    if (strcmp(DataDirs[i], tmp) == 0) return;
-  StrCopy(DataDirs[NDataDirs++], tmp, PATHMAX);
-}
-
-static void DirOf(const char *path, char *out)
-{
-  char *p;
-  StrCopy(out, path, PATHMAX);
-  p = strrchr(out, '/');
-  if (p) p[1] = 0;
-  else StrCopy(out, "./", PATHMAX);
-}
-
 void InitDataDirs(const char *argv0)
 {
-  char cwd[PATHMAX], exe[PATHMAX], exeDir[PATHMAX];
-  long n;
-  if (!getcwd(cwd, PATHMAX - 2)) StrCopy(cwd, ".", PATHMAX);
-  StrCat(cwd, "/", PATHMAX);
-  n = (long)readlink("/proc/self/exe", exe, PATHMAX - 1);
-  if (n > 0) exe[n] = 0;
-  else StrCopy(exe, argv0, PATHMAX);
-  DirOf(exe, exeDir);
-  NDataDirs = 0;
-  AddDir(cwd, "");
-  AddDir(exeDir, "");
-  AddDir(cwd, "spurg117/");
-  AddDir(exeDir, "spurg117/");
-  AddDir(exeDir, "../spurg117/");
+  char *p;
+  long n = (long)readlink("/proc/self/exe", ExeDir, PATHMAX - 1);
+  if (n > 0) ExeDir[n] = 0;
+  else StrCopy(ExeDir, argv0, PATHMAX);
+  p = strrchr(ExeDir, '/');
+  if (p) p[1] = 0;
+  else ExeDir[0] = 0;
+}
+
+static FILE *OpenF(const char *fn, const char *mode)
+{
+  FILE *f = fopen(fn, mode);
+  if (f) setvbuf(f, IoBuf, _IOFBF, sizeof(IoBuf));
+  return f;
 }
 
 static u8 FileExists(const char *fn)
@@ -108,69 +42,74 @@ static u8 FileExists(const char *fn)
   return 1;
 }
 
-u8 FindData(const char *name, char *out)
+/* full path of a data file in Path, or NULL */
+static const char *FindData(const char *name)
 {
+  static const char *const Sub[5] = {
+    "", "", "spurg117/", "spurg117/", "../spurg117/"
+  };
   u8 i;
-  for (i = 0; i < NDataDirs; i++) {
-    StrCopy(out, DataDirs[i], PATHMAX);
-    StrCat(out, name, PATHMAX);
-    if (FileExists(out)) return 1;
+  for (i = 0; i < 5; i++) {
+    Path[0] = 0;
+    if (i & 1 || i == 4) StrCopy(Path, ExeDir, PATHMAX);
+    StrCat(Path, Sub[i], PATHMAX);
+    StrCat(Path, name, PATHMAX);
+    if (FileExists(Path)) return Path;
   }
-  out[0] = 0;
-  return 0;
+  return NULL;
 }
 
 /* ===========================================================================
-   Text files: loads a CP437 file, splitting on CR LF, lone CR or lone LF.
-   The lines live in TextBuf until the next LoadLines.
+   Text files: CP437 lines ending in CR LF, lone CR or lone LF; ^Z ends the
+   file.  Tabs become spaces, other control characters are dropped and a
+   line is cut at SCRW characters (the screen width).
    =========================================================================== */
-static void AddRawLine(const u8 *s, u16 n)
+static FILE *TF;
+static u8 TEof;
+
+u8 TextOpen(const char *name)
 {
-  char *dst;
-  u16 room;
-  if (LineCount >= MAXLINES || TextLen + 1 >= TEXTMAX) return;
-  dst = TextBuf + TextLen;
-  room = (u16)(TEXTMAX - TextLen);
-  CP437ToUTF8(s, n, dst, room);
-  Lines[LineCount++] = dst;
-  TextLen = (u16)(TextLen + strlen(dst) + 1);
+  const char *fn = FindData(name);
+  TF = fn ? OpenF(fn, "rb") : NULL;
+  TEof = 0;
+  return TF != NULL;
 }
 
-void AddLine(const char *s)
+void TextRewind(void)
 {
-  if (LineCount < MAXLINES) Lines[LineCount++] = s;
+  if (TF) rewind(TF);
+  TEof = 0;
 }
 
-u8 LoadLines(const char *name)
+void TextClose(void)
 {
-  char fn[PATHMAX];
-  FILE *f;
-  u16 size, i, start;
-  LineCount = 0;
-  TextLen = 0;
-  if (!FindData(name, fn)) return 0;
-  f = fopen(fn, "rb");
-  if (!f) return 0;
-  size = (u16)fread(RawBuf, 1, RAWMAX, f);
-  fclose(f);
-  start = 0;
-  i = 0;
-  while (i < size) {
-    u8 c = RawBuf[i];
-    if (c == 13) {
-      AddRawLine(RawBuf + start, (u16)(i - start));
-      if (i + 1 < size && RawBuf[i + 1] == 10) i++;
-      start = (u16)(i + 1);
-    } else if (c == 10) {
-      AddRawLine(RawBuf + start, (u16)(i - start));
-      start = (u16)(i + 1);
-    } else if (c == 26) {
+  if (TF) fclose(TF);
+  TF = NULL;
+}
+
+u8 TextLine(char *line)
+{
+  int c;
+  u8 n = 0, got = 0;
+  line[0] = 0;
+  if (!TF || TEof) return 0;
+  for (;;) {
+    c = fgetc(TF);
+    if (c == EOF || c == 26) {
+      TEof = 1;
       break;
     }
-    i++;
+    got = 1;
+    if (c == 13) {
+      if ((c = fgetc(TF)) != 10 && c != EOF) ungetc(c, TF);
+      break;
+    }
+    if (c == 10) break;
+    if (c == 9) c = ' ';
+    if (c >= ' ' && n < SCRW) line[n++] = (char)c;
   }
-  if (i > start) AddRawLine(RawBuf + start, (u16)(i - start));
-  return 1;
+  line[n] = 0;
+  return got;
 }
 
 /* ===========================================================================
@@ -186,15 +125,15 @@ u8 LoadLines(const char *name)
 #define R_CMARK    18
 #define R_CAUSE    19
 #define CAUSE_MARK 0xC5
+#define SLOT(i)    (Slots + ((i) - 1) * REC_SIZE)
 
-static u8 Slots[TOP_COUNT + 1][REC_SIZE];
+static u8 Slots[TOP_COUNT * REC_SIZE];
 static u8 NewRec[REC_SIZE];
 
 /* Trunc(real48 + 0.0001) for values in the integer range */
 static s16 RecScore(const u8 *r)
 {
-  u8 e = r[R_REAL];
-  u8 sh;
+  u8 e = r[R_REAL], sh;
   u32 m;
   if (e < 129) return 0;                 /* zero or below one */
   if (r[R_REAL + 5] & 0x80) return 0;    /* negative */
@@ -209,174 +148,113 @@ static s16 RecScore(const u8 *r)
 
 static void RealEncode(u8 *r, s16 v)
 {
-  u8 k, i;
+  u8 k = 0;
   u32 m;
-  for (i = 0; i < 6; i++) r[i] = 0;
+  memset(r, 0, 6);
   if (v <= 0) return;
-  k = 0;
   while (k < 14 && (v >> (k + 1)) != 0) k++;
   m = ((u32)v - (1UL << k)) << (23 - k);
   r[0] = (u8)(k + 129);
   r[5] = (u8)((m >> 16) & 0x7F);
-  r[4] = (u8)((m >> 8) & 0xFF);
-  r[3] = (u8)(m & 0xFF);
+  r[4] = (u8)(m >> 8);
+  r[3] = (u8)m;
 }
 
-static u16 RecLevel(const u8 *r)
+/* "<name> menehtyi tasolle <n>" etc. into Path (used as a line buffer) */
+static const char *RecLine(const u8 *r)
 {
-  return (u16)(r[R_LEVEL] | (r[R_LEVEL + 1] << 8));
-}
-
-static void RecName(const u8 *r, char *out, u16 size)
-{
-  u8 ln = r[0];
-  if (ln > 9) ln = 9;
-  CP437ToUTF8(r + 1, ln, out, size);
-}
-
-/* NULL = no cause stored (old/DOS record), "*" = won the game */
-static const char *RecCause(const u8 *r)
-{
-  if (r[R_CMARK] == CAUSE_MARK && r[R_CAUSE] < K_COUNT) {
-    if (r[R_CAUSE] == K_WON) return "*";
-    if (Causes[r[R_CAUSE]][0]) return Causes[r[R_CAUSE]];
+  char *o = Path;
+  u8 ln = r[0] > 9 ? 9 : r[0], cause = 0xFF;
+  const char *lv = NumStr(r[R_LEVEL] | (r[R_LEVEL + 1] << 8), 0);
+  memcpy(o, r + 1, ln);
+  o[ln] = 0;
+  if (r[R_CMARK] == CAUSE_MARK && r[R_CAUSE] < K_COUNT) cause = r[R_CAUSE];
+  if (cause == K_WON) {
+    StrCat(o, " selvisi tasolta ", PATHMAX);
+    StrCat(o, lv, PATHMAX);
+    StrCat(o, " konjakin kera!", PATHMAX);
+  } else if (cause == 0xFF) {
+    StrCat(o, " menehtyi tasolle ", PATHMAX);
+    StrCat(o, lv, PATHMAX);
+  } else {
+    StrCat(o, " kuoli tasolle ", PATHMAX);
+    StrCat(o, lv, PATHMAX);
+    StrCat(o, ", kuolinsyy: ", PATHMAX);
+    StrCat(o, Causes[cause], PATHMAX);
+    StrCat(o, ".", PATHMAX);
   }
-  return NULL;
+  return o;
 }
 
-static void RecLine(const u8 *r, char *out)
-{
-  char name[64];
-  const char *c = RecCause(r);
-  RecName(r, name, sizeof(name));
-  if (c && c[0] == '*')
-    sprintf(out, "%s selvisi tasolta %u konjakin kera!", name, RecLevel(r));
-  else if (!c)
-    sprintf(out, "%s menehtyi tasolle %u", name, RecLevel(r));
-  else
-    sprintf(out, "%s kuoli tasolle %u, kuolinsyy: %s.", name, RecLevel(r), c);
-}
-
+/* the original's "it is you" test: 5-byte name and 6-byte score match */
 static u8 SameRec(const u8 *a, const u8 *b)
 {
-  u8 i;
-  for (i = 0; i <= 4; i++) if (a[i] != b[i]) return 0;
-  for (i = 10; i <= 15; i++) if (a[i] != b[i]) return 0;
-  return 1;
+  return memcmp(a, b, 5) == 0 && memcmp(a + 10, b + 10, 6) == 0;
 }
 
-static void TopPath(char *out)
+static const char *TopPath(void)
 {
-  if (FindData(TOP_FILE, out)) return;
-  if (!getcwd(out, PATHMAX - 16)) StrCopy(out, ".", PATHMAX);
-  StrCat(out, "/", PATHMAX);
-  StrCat(out, TOP_FILE, PATHMAX);
-}
-
-static u8 LoadTop(void)
-{
-  char fn[PATHMAX];
-  FILE *f;
-  u8 n = 0;
-  memset(Slots, 0, sizeof(Slots));
-  TopPath(fn);
-  f = fopen(fn, "rb");
-  if (!f) return 0;
-  while (n < TOP_COUNT && fread(Slots[n + 1], 1, REC_SIZE, f) == REC_SIZE) n++;
-  fclose(f);
-  return n;
-}
-
-static void SaveTop(u8 count)
-{
-  char fn[PATHMAX];
-  FILE *f;
-  u8 i;
-  TopPath(fn);
-  f = fopen(fn, "wb");
-  if (!f) return;               /* read-only: the table is still shown */
-  for (i = 1; i <= count; i++) fwrite(Slots[i], 1, REC_SIZE, f);
-  fclose(f);
-}
-
-/* names are stored as CP437 bytes; Finnish letters are mapped back */
-static void UTF8ToCP437Name(const char *s, u8 *out, u8 *outlen, u8 max)
-{
-  u8 n = 0, l;
-  const u8 *p = (const u8 *)s;
-  while (*p && n < max) {
-    l = U8Len(*p);
-    if (l == 1) out[n++] = *p;
-    else if (l == 2 && p[0] == 0xC3) {
-      switch (p[1]) {
-        case 0xA4: out[n++] = 0x84; break;   /* ä */
-        case 0xB6: out[n++] = 0x94; break;   /* ö */
-        case 0x84: out[n++] = 0x8E; break;   /* Ä */
-        case 0x96: out[n++] = 0x99; break;   /* Ö */
-        case 0xA5: out[n++] = 0x86; break;   /* å */
-        case 0x85: out[n++] = 0x8F; break;   /* Å */
-        default:   out[n++] = '?'; break;
-      }
-    } else out[n++] = '?';
-    while (l > 0 && *p) { p++; l--; }
-  }
-  *outlen = n;
+  const char *p = FindData(TOP_FILE);
+  if (p) return p;
+  StrCopy(Path, TOP_FILE, PATHMAX);
+  return Path;
 }
 
 static void MakeRec(void)
 {
-  u8 len;
-  s16 sc;
+  u8 len = (u8)strlen(PlayerName);
   memset(NewRec, 0, REC_SIZE);
-  UTF8ToCP437Name(PlayerName, NewRec + 1, &len, 9);
   NewRec[0] = len;
-  sc = (Score >= 32767) ? 32767 : (s16)(Score + 1);
-  if (sc > 0) RealEncode(NewRec + R_REAL, sc);
-  NewRec[R_LEVEL] = (u8)(Level & 0xFF);
-  NewRec[R_LEVEL + 1] = 0;
+  memcpy(NewRec + 1, PlayerName, len);
+  if (Score < 32767 && Score + 1 > 0) RealEncode(NewRec + R_REAL, (s16)(Score + 1));
+  NewRec[R_LEVEL] = Level;
   NewRec[R_CMARK] = CAUSE_MARK;
   NewRec[R_CAUSE] = Won ? (u8)K_WON : (Killer ? Killer : (u8)K_TUNTEMATON);
 }
 
+static void PutRow(u8 row, const u8 *r, u8 at)
+{
+  SPut(7, row, NumStr(RecScore(r), 6), A_NORM);
+  SPut(20, row, RecLine(r), at);
+}
+
 void ShowHiscore(void)
 {
-  u8 n, i, pos, count, upper;
-  char line[160], num[16];
+  FILE *f;
+  u8 n = 0, i, pos = 1, count, upper;
+  s16 mine;
   MakeRec();
-  n = LoadTop();
-  pos = 1;
-  while (pos <= TOP_COUNT && pos <= n &&
-         RecScore(NewRec) <= RecScore(Slots[pos]))
-    pos++;
+  mine = RecScore(NewRec);
+  memset(Slots, 0, sizeof(Slots));
+  if ((f = OpenF(TopPath(), "rb")) != NULL) {
+    while (n < TOP_COUNT && fread(SLOT(n + 1), 1, REC_SIZE, f) == REC_SIZE) n++;
+    fclose(f);
+  }
+  while (pos <= TOP_COUNT && pos <= n && mine <= RecScore(SLOT(pos))) pos++;
   if (pos <= TOP_COUNT) {
     upper = (u8)(n + 1 < TOP_COUNT ? n + 1 : TOP_COUNT);
-    for (i = upper; i >= pos + 1; i--) memcpy(Slots[i], Slots[i - 1], REC_SIZE);
-    memcpy(Slots[pos], NewRec, REC_SIZE);
+    for (i = upper; i > pos; i--) memcpy(SLOT(i), SLOT(i - 1), REC_SIZE);
+    memcpy(SLOT(pos), NewRec, REC_SIZE);
     count = upper;
   } else
     count = TOP_COUNT;
-  SaveTop(count);
+  if ((f = OpenF(TopPath(), "wb")) != NULL) {   /* read-only: still shown */
+    fwrite(Slots, 1, (size_t)count * REC_SIZE, f);
+    fclose(f);
+  }
 
   SClear();
   SPut(30, 1, "20 PARASTA SPURGUA :", A_BOLD);
   for (i = 1; i <= count; i++) {
-    sprintf(num, "%u.", i);
-    SPut(2, i + 2, num, A_NORM);
-    sprintf(num, "%6d", RecScore(Slots[i]));
-    SPut(7, i + 2, num, A_NORM);
-    RecLine(Slots[i], line);
-    if (SameRec(Slots[i], NewRec)) {
+    SPut(2, i + 2, NumStr(i, 0), A_NORM);
+    SPut(i < 10 ? 3 : 4, i + 2, ".", A_NORM);
+    if (SameRec(SLOT(i), NewRec)) {
       SPut(1, i + 2, ">", A_YELLOW);
-      SPut(20, i + 2, line, A_YELLOW);
+      PutRow((u8)(i + 2), SLOT(i), A_YELLOW);
     } else
-      SPut(20, i + 2, line, A_NORM);
+      PutRow((u8)(i + 2), SLOT(i), A_NORM);
   }
-  if (pos > TOP_COUNT) {
-    sprintf(num, "%6d", RecScore(NewRec));
-    SPut(7, 23, num, A_NORM);
-    RecLine(NewRec, line);
-    SPut(20, 23, line, A_YELLOW);
-  }
+  if (pos > TOP_COUNT) PutRow(23, NewRec, A_YELLOW);
   SPut(30, 25, "SpurguX Vs. 1.17, (C) 1987 P.N.", A_NORM);
   CurRow = 25;
   CurCol = 1;
@@ -384,178 +262,120 @@ void ShowHiscore(void)
 }
 
 /* ===========================================================================
-   Save / load (v2.24 "S = talletus").  Byte-serialised, little-endian.
+   Save / load (v2.24 "S = talletus").  Written field by field,
+   little-endian, straight to the file (no buffer).
    =========================================================================== */
 #define SAVE_FILE  "SPU.SAV"
-#define SAVE_MAGIC "SPURGUXC89SAVE1"
-#define SAVEMAX    4096
+#define SAVE_MAGIC "SPURGUXC89SAVE2"
 
-static u8  SaveBuf[SAVEMAX];
-static u16 SavePos;
-static u16 SaveLen;
-static u8  SaveBad;
+static FILE *SF;
+static u8 Saving, SaveBad;
 
-void SavePath(char *out)
+/* the save file lives next to SPU.TOP */
+const char *SavePathStr(void)
 {
   char *p;
-  TopPath(out);
-  p = strrchr(out, '/');
+  TopPath();
+  p = strrchr(Path, '/');
   if (p) p[1] = 0;
-  else out[0] = 0;
-  StrCat(out, SAVE_FILE, PATHMAX);
+  else Path[0] = 0;
+  StrCat(Path, SAVE_FILE, PATHMAX);
+  return Path;
 }
 
 u8 SaveFileExists(void)
 {
-  char fn[PATHMAX];
-  SavePath(fn);
-  return FileExists(fn);
+  return FileExists(SavePathStr());
 }
 
 void DeleteSave(void)
 {
-  char fn[PATHMAX];
-  SavePath(fn);
-  remove(fn);
+  remove(SavePathStr());
 }
 
-static void Put8(u8 v)
+static void F8(u8 *v)
 {
-  if (SavePos < SAVEMAX) SaveBuf[SavePos++] = v;
-  else SaveBad = 1;
-}
-
-static void Put16(u16 v)
-{
-  Put8((u8)(v & 0xFF));
-  Put8((u8)(v >> 8));
-}
-
-static void Put32(u32 v)
-{
-  Put16((u16)(v & 0xFFFFUL));
-  Put16((u16)((v >> 16) & 0xFFFFUL));
-}
-
-static void PutStr8(const char *s)
-{
-  u8 n = (u8)strlen(s), i;
-  Put8(n);
-  for (i = 0; i < n; i++) Put8((u8)s[i]);
-}
-
-static u8 Get8(void)
-{
-  if (SavePos < SaveLen) return SaveBuf[SavePos++];
-  SaveBad = 1;
-  return 0;
-}
-
-static u16 Get16(void)
-{
-  u16 lo = Get8();
-  return (u16)(lo | ((u16)Get8() << 8));
-}
-
-static u32 Get32(void)
-{
-  u32 lo = Get16();
-  return lo | ((u32)Get16() << 16);
-}
-
-static void GetStr8(char *out, u16 size)
-{
-  u8 n = Get8(), i;
-  for (i = 0; i < n; i++) {
-    u8 c = Get8();
-    if (i + 1 < size) out[i] = (char)c;
+  int c;
+  if (Saving) {
+    if (fputc(*v, SF) == EOF) SaveBad = 1;
+  } else {
+    if ((c = fgetc(SF)) == EOF) SaveBad = 1;
+    *v = (u8)c;
   }
-  out[n < size ? n : size - 1] = 0;
 }
 
-static s32 ToS32(u32 v)
+static void F16(u16 *v)
 {
-  if (v & 0x80000000UL) return -(s32)((~v + 1UL) & 0x7FFFFFFFUL);
-  return (s32)v;
+  u8 lo = (u8)*v, hi = (u8)(*v >> 8);
+  F8(&lo);
+  F8(&hi);
+  *v = (u16)(lo | (hi << 8));
+}
+
+static void F32(u32 *v)
+{
+  u16 lo = (u16)(*v & 0xFFFFUL), hi = (u16)(*v >> 16);
+  F16(&lo);
+  F16(&hi);
+  *v = (u32)lo | ((u32)hi << 16);
+  if (*v & 0x80000000UL) *v |= ~0xFFFFFFFFUL;   /* sign-extend for s32 */
+}
+
+static void FN(u8 *p, u16 n)
+{
+  while (n--) F8(p++);
 }
 
 /* one routine for both directions keeps the field order in sync */
-static void Serialise(u8 save)
+static u8 Serialise(void)
 {
-  u16 x, y, i;
-  u8 *flags[14];
-  flags[0] = &PoliceActive; flags[1] = &Friendly; flags[2] = &Aids;
-  flags[3] = &Blind; flags[4] = &PortsariOn; flags[5] = &PunksOn;
-  flags[6] = &FlagAlco; flags[7] = &FlagDivari; flags[8] = &FlagPoliisi;
-  flags[9] = &FlagGrave; flags[10] = &FlagZoo; flags[11] = &FlagAlcove;
-  flags[12] = &HotelName; flags[13] = &Killer;
-  if (save) {
-    for (x = 0; x < SCRW + 2; x++)
-      for (y = 0; y < SCRH + 1; y++) Put8(Map[x][y]);
-    Put8(PX); Put8(PY); Put8(Level); Put16((u16)Mk);
-    Put32((u32)Voima); Put32((u32)Prom); Put32(Turn); Put16((u16)Score);
-    Put8(DotsNeeded); Put8(DotsGot);
-    Put8(InvKalja); Put8(InvLonkka); Put8(InvKiekura);
-    for (i = 0; i < E_COUNT; i++) Put8(Equip[i]);
-    Put16(Kokemus);
-    for (i = 0; i < T_COUNT; i++) Put16((u16)HP[i]);
-    Put16((u16)FriendlyTurns);
-    Put8(KingX); Put8(KingY);
-    for (i = 0; i < 5; i++) Put8(PunkUnder[i]);
-    for (i = 0; i < 14; i++) Put8(*flags[i]);
-  } else {
-    for (x = 0; x < SCRW + 2; x++)
-      for (y = 0; y < SCRH + 1; y++) Map[x][y] = Get8();
-    PX = Get8(); PY = Get8(); Level = Get8(); Mk = (s16)Get16();
-    Voima = ToS32(Get32()); Prom = ToS32(Get32()); Turn = Get32();
-    Score = (s16)Get16();
-    DotsNeeded = Get8(); DotsGot = Get8();
-    InvKalja = Get8(); InvLonkka = Get8(); InvKiekura = Get8();
-    for (i = 0; i < E_COUNT; i++) Equip[i] = Get8();
-    Kokemus = Get16();
-    for (i = 0; i < T_COUNT; i++) HP[i] = (s16)Get16();
-    FriendlyTurns = (s16)Get16();
-    KingX = Get8(); KingY = Get8();
-    for (i = 0; i < 5; i++) PunkUnder[i] = Get8();
-    for (i = 0; i < 14; i++) *flags[i] = Get8();
-  }
+  static char magic[] = SAVE_MAGIC;
+  char m[sizeof(magic)];
+  u8 i;
+  memcpy(m, magic, sizeof(m));
+  FN((u8 *)m, sizeof(m));
+  if (memcmp(m, magic, sizeof(m)) != 0) return 0;
+  FN((u8 *)PlayerName, NAMEMAX);
+  PlayerName[NAMEMAX - 1] = 0;
+  FN(Map, MAPW * MAPH);
+  F8(&PX); F8(&PY); F8(&Level); F16((u16 *)&Mk);
+  F32((u32 *)&Voima); F32((u32 *)&Prom); F32(&Turn); F16((u16 *)&Score);
+  F8(&DotsNeeded); F8(&DotsGot);
+  F8(&InvKalja); F8(&InvLonkka); F8(&InvKiekura);
+  FN(Equip, E_COUNT);
+  F16(&Kokemus);
+  FN((u8 *)HPt, HP_COUNT);
+  F16((u16 *)&FriendlyTurns);
+  F8(&KingX); F8(&KingY);
+  FN(PunkUnder, 5);
+  F8(&PoliceActive); F8(&Friendly); F8(&Aids); F8(&Blind);
+  F8(&PortsariOn); F8(&PunksOn);
+  F8(&FlagAlco); F8(&FlagDivari); F8(&FlagPoliisi); F8(&FlagGrave);
+  F8(&FlagZoo); F8(&FlagAlcove); F8(&HotelName); F8(&Killer);
+  for (i = 0; i < E_COUNT; i++) Equip[i] = Equip[i] != 0;
+  return !SaveBad;
+}
+
+static u8 SaveIO(u8 save)
+{
+  u8 ok;
+  SF = OpenF(SavePathStr(), save ? "wb" : "rb");
+  if (!SF) return 0;
+  Saving = save;
+  SaveBad = 0;
+  ok = Serialise();
+  if (fclose(SF) != 0) ok = 0;
+  return ok;
 }
 
 u8 SaveGame(void)
 {
-  char fn[PATHMAX];
-  FILE *f;
-  u8 ok;
-  SavePos = 0;
-  SaveBad = 0;
-  PutStr8(SAVE_MAGIC);
-  PutStr8(PlayerName);
-  Serialise(1);
-  if (SaveBad) return 0;
-  SavePath(fn);
-  f = fopen(fn, "wb");
-  if (!f) return 0;
-  ok = fwrite(SaveBuf, 1, SavePos, f) == SavePos;
-  if (fclose(f) != 0) ok = 0;
-  return ok;
+  return SaveIO(1);
 }
 
 u8 LoadGame(void)
 {
-  char fn[PATHMAX], magic[32];
-  FILE *f;
-  SavePath(fn);
-  f = fopen(fn, "rb");
-  if (!f) return 0;
-  SaveLen = (u16)fread(SaveBuf, 1, SAVEMAX, f);
-  fclose(f);
-  SavePos = 0;
-  SaveBad = 0;
-  GetStr8(magic, sizeof(magic));
-  if (SaveBad || strcmp(magic, SAVE_MAGIC) != 0) return 0;
-  GetStr8(PlayerName, NAMEMAX);
-  Serialise(0);
-  if (SaveBad || Killer >= K_COUNT || PX < MAP_X0 || PX > MAP_X1 ||
+  if (!SaveIO(0) || Killer >= K_COUNT || PX < MAP_X0 || PX > MAP_X1 ||
       PY < MAP_Y0 || PY > MAP_Y1)
     return 0;
   RecomputeWeapon();

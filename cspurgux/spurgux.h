@@ -6,6 +6,14 @@
      * 8- and 16-bit values preferred; 32-bit only where the range or the
        fixed-point precision demands it (Voima, Promille, turn counter)
      * global variables, fixed-size buffers, no malloc
+     * sized for low-end machines: all text is kept as single-byte CP437
+       (like the DOS original) and converted to UTF-8 only on output;
+       data files are streamed line by line; stdio uses one static 128-byte
+       buffer; about 6 KB of static RAM in total
+
+   Build options:
+     -DOUT_CP437   write CP437 bytes to the terminal as-is (DOS/ANSI.SYS,
+                   retro terminals) instead of converting them to UTF-8
 
    Original game: (C) 1987 Petri Niska.  This is an independent port.
    =========================================================================== */
@@ -18,6 +26,13 @@ typedef unsigned short u16;
 typedef short          s16;
 typedef long           s32;
 typedef unsigned long  u32;
+
+/* --- CP437 letters used in the Finnish texts ----------------------------- */
+#define AE  "\204"    /* ä */
+#define OE  "\224"    /* ö */
+#define AA  "\206"    /* å */
+#define AEU "\216"    /* Ä */
+#define OEU "\231"    /* Ö */
 
 /* --- screen geometry ----------------------------------------------------- */
 #define SCRW 80
@@ -33,6 +48,11 @@ typedef unsigned long  u32;
 #define MAP_X1 79
 #define MAP_Y0 3
 #define MAP_Y1 22
+#define MAPW   (MAP_X1 - MAP_X0 + 1)
+#define MAPH   (MAP_Y1 - MAP_Y0 + 1)
+
+/* only the 66x20 play area is stored; every access is InMap-checked */
+#define M(x, y) Map[((y) - MAP_Y0) * MAPW + ((x) - MAP_X0)]
 
 /* random-placement rectangle of the original placement helper (0x2DF3) */
 #define PLACE_X0 23
@@ -85,8 +105,11 @@ typedef unsigned long  u32;
 #define T_GRAVE    0x5B
 #define T_FENCE    0x5C
 #define T_WALL     0x63
-#define T_MAXCODE  0x63
-#define T_COUNT    (T_MAXCODE + 1)
+#define T_COUNT    0x64
+
+/* creature hit points: one signed byte for $1E..$36 and one for the ghost */
+#define HP_COUNT   (T_KARKURI - T_POLICE1 + 2)
+#define HP(t)      HPt[(t) == T_GHOST ? HP_COUNT - 1 : (t) - T_POLICE1]
 
 #define START_X 15
 #define START_Y 12
@@ -138,11 +161,9 @@ typedef unsigned long  u32;
 #define PI10(n) ((s32)(n) * (PS / 10))   /* n tenths of a promille */
 
 /* --- buffer sizes -------------------------------------------------------- */
-#define MSGMAX   512
-#define NAMEMAX  32
-#define PATHMAX  512
-#define TEXTMAX  16384
-#define MAXLINES 256
+#define MSGMAX   (SCRW + 1)   /* the message row is 80 columns */
+#define NAMEMAX  10           /* 9 CP437 characters (SPU.TOP field) */
+#define PATHMAX  128
 
 /* --- causes of death (v2.24 "kuolinsyy"), index stored in SPU.TOP ------- */
 #define K_WON          0
@@ -172,12 +193,12 @@ typedef unsigned long  u32;
 #define K_GORILLA      24
 #define K_AIDS         25
 #define K_ALKOMYRKYTYS 26
-#define K_COUNT        32
+#define K_COUNT        27
 
 /* ===========================================================================
    Global game state (defined in game.c)
    =========================================================================== */
-extern u8  Map[SCRW + 2][SCRH + 1];
+extern u8  Map[MAPW * MAPH];
 extern u8  PX, PY;
 extern u8  Level;
 extern s16 Mk;
@@ -190,7 +211,7 @@ extern u8  InvKalja, InvLonkka, InvKiekura;
 extern u8  Equip[E_COUNT]; /* 1 = carried */
 extern u8  Weapon;
 extern u16 Kokemus;
-extern s16 HP[T_COUNT];
+extern s8  HPt[HP_COUNT];
 extern u8  PoliceActive, Friendly, Aids, Blind, PortsariOn, PunksOn;
 extern s16 FriendlyTurns;
 extern u8  KingX, KingY;
@@ -198,12 +219,9 @@ extern u8  PunkUnder[5];
 extern u8  FlagAlco, FlagDivari, FlagPoliisi, FlagGrave, FlagZoo, FlagAlcove;
 extern u8  HotelName;
 extern char MsgLine[MSGMAX], LastMsg[MSGMAX];
-extern const char *StateText;
 extern u8  Dead, Won, Saved;
-extern const char *DeathCause;
-extern const char *DeathPre;
 extern u8  Killer;
-extern char PlayerName[NAMEMAX];
+extern char PlayerName[NAMEMAX];   /* CP437 */
 extern u8  UseColor;
 extern u8  StartLevel;
 extern s16 StartMk;
@@ -222,56 +240,41 @@ void RestoreTerm(void);
 void ScreenInit(void);
 void InstallSignals(void);
 void OutStr(const char *s);
-void OutFlush(void);
-u8   U8Len(u8 c);
-u16  ULen(const char *s);
+void OutText(const char *s);
 void SPut(int col, int row, const char *s, u8 at);
 void SFill(int c0, int r0, int c1, int r1);
 void SClear(void);
 void SFlush(void);
 int  ReadKey(void);
+int  ReadRawByte(void);
 int  ReadKeyAfterPause(u16 ms);
 void SleepMs(u16 ms);
-void FlushInput(void);
 
 /* ===========================================================================
    data.c -- data files, high scores, save/load
    =========================================================================== */
-extern const char *Lines[MAXLINES];
-extern u16 LineCount;
-
 void InitDataDirs(const char *argv0);
-u8   FindData(const char *name, char *out);
-u8   LoadLines(const char *name);
-void AddLine(const char *s);
-void CP437ToUTF8(const u8 *src, u16 n, char *dst, u16 dstsize);
+u8   TextOpen(const char *name);
+u8   TextLine(char *line);     /* next line, max SCRW chars; 0 at the end */
+void TextRewind(void);
+void TextClose(void);
 void ShowHiscore(void);
-void SavePath(char *out);
 u8   SaveFileExists(void);
 u8   SaveGame(void);
 u8   LoadGame(void);
 void DeleteSave(void);
+const char *SavePathStr(void);
 
 /* ===========================================================================
    game.c -- rules
    =========================================================================== */
 int  Random(s32 n);
 void Randomize(u32 seed);
-void SetMsg(const char *s);
-void Msg(const char *s);
-void DrawMsg(void);
-void FullRedraw(void);
-void PressAnySlow(void);
-int  AskKey(const char *q);
-u8   AskYesNo(const char *q);
 void RecomputeWeapon(void);
-void NewGame(void);
-void BuildLevel(void);
 void MainLoop(void);
 void DumpMapToFile(const char *fn);
 void StrCopy(char *dst, const char *src, u16 size);
 void StrCat(char *dst, const char *src, u16 size);
-s32  TruncDiv(s32 a, s32 b);
-s32  RoundDiv(s32 a, s32 b);
+const char *NumStr(s32 v, u8 width);
 
 #endif
