@@ -1,0 +1,77 @@
+
+            SpurguX Vs 1.17
+             (C) 1987 P.N.
+        Commodore 64 -versio
+
+ SpurguX on tositapahtumiin perustuva
+seikkailupeli, jossa antisankari kahlaa
+kaupunginosien halki etsien
+konjakkipulloa, jonka huhutaan olevan
+tasolla 50, seuranaan ainoastaan kova
+jano. Kaduilla hän törmää mitä
+erilaisimpiin olentoihin, joilla
+kaikilla on omat tapansa, sekä saattaa
+löytää erilaisia kapistuksia, joista on
+hyötyä tai sitten ei. Pelaajan on
+kerättävä kaikki tason pisteet (.)
+ennen seuraavalle tasolle pääsyä.
+Mikäli pelaajalla on aggressivisia
+taipumuksia, hän voi hakata
+edellämainittuja olentoja - tai vaikka
+seinää - liikkumalla niitä päin, eri
+asia on, mitä siitä seuraa ...
+<lissää>
+ Pienenä vinkkinä alkoholiin
+tottumattomille sanottakoon, ettei sitä
+kannata juoda aivan holtittomasti,
+muttei peli oikein luista aivan selvin
+päinkään.
+
+ Pelialue on leveämpi kuin ruutu: se
+vierii sivuttain, kun liikut. Kehyksen
+nuolet näyttävät, että katua riittää.
+<lissää>
+              OBJEKTIT:
+ & = Lonkka        @ = Pelaaja
+ % = Kalja         # = Sähköaita
+ Φ = Konjakki      █ = Seinä
+ ( = Makkara       ± = Hauta
+ ! = Pamppu        Σ = Haalarit
+ \ = Stiletti      ≈ = Vesialue
+ ß = Ketjut        æ = Kökköä
+ $ = Rahaa (mk)    ⌂ = Maito
+ o = Omena         ∞ = Suklaata
+ ¥ = Silakka       Θ = Camel-Boots
+ ¿ = Vihje         . = Piste
+ > = Portti seuraavalle tasolle
+ C = Lainvartija   M = Vanhahko nainen
+ N = Neekeri       T = Teekkari
+ P = Punkkari      Ñ = Punkkarien kingi
+ K = Kake          V = Taskuvaras
+ E = Vankikarkuri  D = Koira
+ ° = Aave          B = Pisteennielijä
+ Ω = Portsari      H = Hintti
+ G = Gorilla       O = Skinhead
+ Q = Trokari       S = Käärme
+ I = Hippi         A = Aidsinkantaja
+ J = Juppi         R = Pappi
+<lissää>
+                OHJAUS
+
+ Ohjaus noudattaa Hack-nimisen pelin
+ohjausta, mutta SpurguX perustuu
+tosielämään, kun taas Hack on pelkkää
+fiktiota.
+
+ h = vasemmalle     y = luode
+ j = alas           u = koillinen
+ k = ylös           n = kaakko
+ l = oikealle       b = lounas
+ SHIFT + suunta = juokse
+
+ Nuolinäppäimet ja joystick (portti 2)
+liikuttavat, joystickin nappi = portti (>).
+
+ Kun heität jotain, anna inventaariossa
+oleva järjestysnumero taikka kalja = a,
+lonkka = b, makkara = c, 0 = ei heittoa.

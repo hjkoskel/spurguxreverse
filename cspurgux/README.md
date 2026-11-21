@@ -8,11 +8,33 @@ A Linux terminal port of the clean-room SpurguX re-implementation
     make nofloat    # fails if any floating point is used
     make CC=tcc OPT=-O LDOPT=    # another compiler: drop the gcc flags
 
-Data files (`SPU.HLP`, `SPU.SPE`, `SPU.TIP`, `SPU.TOP`) are looked up in the
+The original text files (help `SPU.HLP`, `/` explanations `SPU.SPE` and
+hints `SPU.TIP`) are compiled into the program from `spudata.h`, so no data
+files are needed to play. The high-score file `SPU.TOP` is looked up in the
 current directory, the program directory, `./spurg117/`,
-`<program dir>/spurg117/` and `<program dir>/../spurg117/`. The high-score
-file is written to the first `SPU.TOP` found, and the save file `SPU.SAV`
-is written next to it.
+`<program dir>/spurg117/` and `<program dir>/../spurg117/`. If none exists,
+it is created in the current directory. The save file `SPU.SAV` is written
+next to it.
+
+### Embedded texts: `spudata.h` and `tools/mktexts.py`
+
+`spudata.h` holds each original file as a macro of C89 string literals, one
+per line, used as an array initializer in `data.c`:
+
+    #define SPU_HLP_LINES "", "   SpurguX Vs 1.17", ...
+    static const char *const HlpLines[] = { SPU_HLP_LINES };
+
+The text stays CP437 (bytes above 127 are octal escapes, such as `\204` for
+ä) and every literal is at most 80 characters, under C89's 509-character
+limit. The header is generated and kept in the repository. To regenerate
+it after changing the texts:
+
+    make texts                  # reads ../spurg117/SPU.HLP, .SPE, .TIP
+    make texts TEXTS=some/dir   # the files from another directory
+
+`tools/mktexts.py` splits the lines exactly as the old file reader did: CR
+LF, CR or LF end a line, ^Z ends the file, tabs become spaces, other
+control characters are dropped and lines are cut at 80 characters.
 
 Options: `--mono`, `--seed N`, `--level N`, `--mk N`, `--dumpmap FILE`.
 `NO_COLOR` turns colours off.
@@ -21,10 +43,10 @@ Options: `--mono`, `--seed N`, `--level N`, `--mk N`, `--dumpmap FILE`.
 
 |                         | first port | now        |
 |-------------------------|-----------:|-----------:|
-| static RAM (bss + data) | 77 KB      | 8 KB       |
+| static RAM (bss + data) | 77 KB      | 7 KB       |
 | of which game buffers   | ~75 KB     | ~6 KB      |
-| code + constants (text) | 41 KB      | 36 KB      |
-| Linux x86-64 binary, same flags | 45 KB | 40 KB   |
+| code + constants (text) | 41 KB      | 37 KB + 6 KB texts |
+| Linux x86-64 binary, same flags | 45 KB | 47 KB (texts built in) |
 | heap (`malloc`)         | stdio 4 KB/file | none  |
 
 Where the RAM goes:
@@ -32,8 +54,9 @@ Where the RAM goes:
   250-byte dirty bitmap. Only changed cells are sent to the terminal.
 * Map: 1320 bytes, only the 66×20 play area. The reachability flood fill
   marks cells in bit 7 of the map byte, so it needs no extra array.
-* High-score table: 560 bytes. The data files are streamed a line at a
-  time, and saves are written field by field straight to the file.
+* High-score table: 560 bytes. The texts are read straight from the
+  compiled-in constants, and saves are written field by field straight to
+  the file.
 * stdio: one static 128-byte buffer (`setvbuf`), shared because only one
   file is open at a time.
 * Creature HP: 26 signed bytes. Messages: 2 × 81 bytes.
@@ -73,6 +96,8 @@ Where the RAM goes:
 |-------------|-------------------------------------------------------------|
 | `spurgux.h` | types, constants, tile codes, fixed-point scales, globals   |
 | `term.c`    | raw terminal, CP437 screen buffer with diff output, keyboard |
-| `data.c`    | streamed text files, high-score table, save/load            |
+| `data.c`    | compiled-in texts, high-score table, save/load              |
+| `spudata.h` | the original SPU.HLP, SPU.SPE and SPU.TIP as string literals (generated) |
+| `tools/mktexts.py` | makes `spudata.h` from the original files (`make texts`) |
 | `game.c`    | level generator, combat, creatures, turn handler, main loop |
 | `main.c`    | command line and start-up                                   |

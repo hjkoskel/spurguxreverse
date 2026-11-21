@@ -1,10 +1,11 @@
-/* data.c -- data files (CP437 text), SPU.TOP high scores, save/load.
-   Text files are streamed a line at a time. */
+/* data.c -- the compiled-in text files (CP437), SPU.TOP high scores,
+   save/load. */
 #define _POSIX_C_SOURCE 200112L
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include "spurgux.h"
+#include "spudata.h"
 
 /* one file is open at a time: they all share this stdio buffer, so the
    C library does not allocate one */
@@ -60,56 +61,59 @@ static const char *FindData(const char *name)
 }
 
 /* ===========================================================================
-   Text files: CP437 lines ending in CR LF, lone CR or lone LF; ^Z ends the
-   file.  Tabs become spaces, other control characters are dropped and a
-   line is cut at SCRW characters (the screen width).
+   Text files: the original SPU.HLP, SPU.SPE and SPU.TIP are compiled in
+   (spudata.h, made by tools/mktexts.py), so they are not needed at run
+   time.  The lines are CP437 and at most SCRW characters long, as the old
+   file reader returned them.
    =========================================================================== */
-static FILE *TF;
-static u8 TEof;
+static const char *const HlpLines[] = { SPU_HLP_LINES };
+static const char *const SpeLines[] = { SPU_SPE_LINES };
+static const char *const TipLines[] = { SPU_TIP_LINES };
+
+#define NLINES(a) ((u16)(sizeof(a) / sizeof((a)[0])))
+
+static const struct {
+  const char *name;
+  const char *const *lines;
+  u16 count;
+} Texts[3] = {
+  { "SPU.HLP", HlpLines, NLINES(HlpLines) },
+  { "SPU.SPE", SpeLines, NLINES(SpeLines) },
+  { "SPU.TIP", TipLines, NLINES(TipLines) }
+};
+
+static const char *const *TLines;
+static u16 TCount, TNext;
 
 u8 TextOpen(const char *name)
 {
-  const char *fn = FindData(name);
-  TF = fn ? OpenF(fn, "rb") : NULL;
-  TEof = 0;
-  return TF != NULL;
+  u8 i;
+  TLines = NULL;
+  TCount = TNext = 0;
+  for (i = 0; i < 3; i++)
+    if (strcmp(name, Texts[i].name) == 0) {
+      TLines = Texts[i].lines;
+      TCount = Texts[i].count;
+    }
+  return TLines != NULL;
 }
 
 void TextRewind(void)
 {
-  if (TF) rewind(TF);
-  TEof = 0;
+  TNext = 0;
 }
 
 void TextClose(void)
 {
-  if (TF) fclose(TF);
-  TF = NULL;
+  TLines = NULL;
 }
 
 u8 TextLine(char *line)
 {
-  int c;
-  u8 n = 0, got = 0;
   line[0] = 0;
-  if (!TF || TEof) return 0;
-  for (;;) {
-    c = fgetc(TF);
-    if (c == EOF || c == 26) {
-      TEof = 1;
-      break;
-    }
-    got = 1;
-    if (c == 13) {
-      if ((c = fgetc(TF)) != 10 && c != EOF) ungetc(c, TF);
-      break;
-    }
-    if (c == 10) break;
-    if (c == 9) c = ' ';
-    if (c >= ' ' && n < SCRW) line[n++] = (char)c;
-  }
-  line[n] = 0;
-  return got;
+  if (!TLines || TNext >= TCount) return 0;
+  StrCopy(line, TLines[TNext++], SCRW + 1);
+  return 1;
 }
 
 /* ===========================================================================
